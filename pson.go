@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"sync"
-	"sync/atomic"
 )
 
 // An AsyncFunc represents a piece of data that should be sent later.
@@ -48,15 +47,13 @@ func Marshal(ctx context.Context, out ChunkWriter, in any, opts ...json.Options)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	opt := json.JoinOptions(opts...)
-	m, _ := json.GetOption(opt, json.WithMarshalers)
-
 	c := make(chan result)
 	var wg sync.WaitGroup
 	var n uint64
+	marshalAsync := func(e *jsontext.Encoder, f AsyncFunc) error {
+		id := fmt.Sprintf("$pson:%v", n)
+		n++
 
-	m = json.JoinMarshalers(m, json.MarshalToFunc(func(e *jsontext.Encoder, f AsyncFunc) error {
-		id := fmt.Sprintf("$pson:%v", atomic.AddUint64(&n, 1))
 		wg.Go(func() {
 			done := make(chan struct{})
 			val, err := f(ctx)
@@ -69,14 +66,17 @@ func Marshal(ctx context.Context, out ChunkWriter, in any, opts ...json.Options)
 		})
 
 		return e.WriteToken(jsontext.String(id))
-	}))
+	}
+
+	opt := json.JoinOptions(opts...)
+	m, _ := json.GetOption(opt, json.WithMarshalers)
+	m = json.JoinMarshalers(m, json.MarshalToFunc(marshalAsync))
+	opt = json.JoinOptions(opt, json.WithMarshalers(m))
 
 	chunk, err := out.Chunk()
 	if err != nil {
 		return err
 	}
-	opt = json.JoinOptions(opt, json.WithMarshalers(m))
-
 	merr := json.MarshalWrite(chunk, in, opt)
 	cerr := chunk.Close()
 	err = errors.Join(merr, cerr)
@@ -99,7 +99,6 @@ func Marshal(ctx context.Context, out ChunkWriter, in any, opts ...json.Options)
 		if err != nil {
 			return err
 		}
-
 		merr := json.MarshalWrite(chunk, map[string]any{r.ID: r.Val}, opt)
 		cerr := chunk.Close()
 		close(r.Done)
