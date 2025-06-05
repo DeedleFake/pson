@@ -22,6 +22,47 @@ type result struct {
 	Done chan struct{}
 }
 
+type marshalState struct {
+	ctx context.Context
+	c   chan result
+	wg  sync.WaitGroup
+	id  uint64
+}
+
+func (state *marshalState) Marshal(e *jsontext.Encoder, f AsyncFunc) error {
+	id := fmt.Sprintf("$pson:%v", state.id)
+	state.id++
+
+	state.wg.Go(func() {
+		done := make(chan struct{})
+		val, err := f(state.ctx)
+		select {
+		case <-state.ctx.Done():
+			return
+		case state.c <- result{ID: id, Val: val, Err: err, Done: done}:
+			<-done
+		}
+	})
+
+	return e.WriteToken(jsontext.String(id))
+}
+
+func (state *marshalState) Wait() {
+	state.wg.Wait()
+	close(state.c)
+}
+
+func marshalChunk(out ChunkWriter, v any, opts ...json.Options) error {
+	chunk, err := out.Chunk()
+	if err != nil {
+		return err
+	}
+
+	merr := json.MarshalWrite(chunk, v, opts...)
+	cerr := chunk.Close()
+	return errors.Join(merr, cerr)
+}
+
 // Marshal encodes a piece of data as JSON and writes it to out. This
 // works almost exactly like [json.Marshal] except that it adds
 // specialized support for [AsyncFunc] values. When one is encountered
@@ -47,62 +88,30 @@ func Marshal(ctx context.Context, out ChunkWriter, in any, opts ...json.Options)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	c := make(chan result)
-	var wg sync.WaitGroup
-	var n uint64
-	marshalAsync := func(e *jsontext.Encoder, f AsyncFunc) error {
-		id := fmt.Sprintf("$pson:%v", n)
-		n++
-
-		wg.Go(func() {
-			done := make(chan struct{})
-			val, err := f(ctx)
-			select {
-			case <-ctx.Done():
-				return
-			case c <- result{ID: id, Val: val, Err: err, Done: done}:
-				<-done
-			}
-		})
-
-		return e.WriteToken(jsontext.String(id))
+	state := &marshalState{
+		ctx: ctx,
+		c:   make(chan result),
 	}
 
 	opt := json.JoinOptions(opts...)
 	m, _ := json.GetOption(opt, json.WithMarshalers)
-	m = json.JoinMarshalers(m, json.MarshalToFunc(marshalAsync))
+	m = json.JoinMarshalers(m, json.MarshalToFunc(state.Marshal))
 	opt = json.JoinOptions(opt, json.WithMarshalers(m))
 
-	chunk, err := out.Chunk()
-	if err != nil {
-		return err
-	}
-	merr := json.MarshalWrite(chunk, in, opt)
-	cerr := chunk.Close()
-	err = errors.Join(merr, cerr)
+	err := marshalChunk(out, in, opt)
 	if err != nil {
 		return err
 	}
 
-	go func() {
-		wg.Wait()
-		close(c)
-	}()
-
-	for r := range c {
+	go state.Wait()
+	for r := range state.c {
 		if r.Err != nil {
 			close(r.Done)
 			return r.Err
 		}
 
-		chunk, err := out.Chunk()
-		if err != nil {
-			return err
-		}
-		merr := json.MarshalWrite(chunk, map[string]any{r.ID: r.Val}, opt)
-		cerr := chunk.Close()
+		err := marshalChunk(out, map[string]any{r.ID: r.Val}, opt)
 		close(r.Done)
-		err = errors.Join(merr, cerr)
 		if err != nil {
 			return err
 		}
