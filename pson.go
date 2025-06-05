@@ -1,29 +1,46 @@
 package pson
 
 import (
+	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
 	"io"
+	"sync"
+	"sync/atomic"
 )
 
-type AsyncFunc func() (any, error)
+type AsyncFunc func(ctx context.Context) (any, error)
 
-func Marshal(out io.Writer, in any, opts ...json.Options) error {
+type result struct {
+	ID   string
+	Val  any
+	Err  error
+	Done chan struct{}
+}
+
+func Marshal(ctx context.Context, out io.Writer, in any, opts ...json.Options) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	opt := json.JoinOptions(opts...)
 	m, _ := json.GetOption(opt, json.WithMarshalers)
 
-	var async []AsyncFunc
+	c := make(chan result)
+	var wg sync.WaitGroup
+	var n uint64
+
 	m = json.JoinMarshalers(m, json.MarshalToFunc(func(e *jsontext.Encoder, f AsyncFunc) error {
-		id := fmt.Sprintf("$pson:%v", len(async))
-		async = append(async, func() (any, error) {
-			v, err := f()
-			if err != nil {
-				return nil, err
+		id := fmt.Sprintf("$pson:%v", atomic.AddUint64(&n, 1))
+		wg.Go(func() {
+			done := make(chan struct{})
+			val, err := f(ctx)
+			select {
+			case <-ctx.Done():
+				return
+			case c <- result{ID: id, Val: val, Err: err, Done: done}:
+				<-done
 			}
-			return map[string]any{
-				id: v,
-			}, nil
 		})
 
 		return e.WriteToken(jsontext.String(id))
@@ -35,16 +52,18 @@ func Marshal(out io.Writer, in any, opts ...json.Options) error {
 		return err
 	}
 
-	// It has to loop like this because the length of the slice can
-	// change out from under it.
-	for i := 0; i < len(async); i++ {
-		f := async[i]
+	go func() {
+		wg.Wait()
+		close(c)
+	}()
 
-		v, err := f()
-		if err != nil {
-			return err
+	for r := range c {
+		if r.Err != nil {
+			close(r.Done)
+			return r.Err
 		}
-		err = json.MarshalWrite(out, v, opt)
+		err := json.MarshalWrite(out, map[string]any{r.ID: r.Val}, opt)
+		close(r.Done)
 		if err != nil {
 			return err
 		}

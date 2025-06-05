@@ -1,6 +1,7 @@
 package pson_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -10,10 +11,10 @@ import (
 
 func TestMarshal(t *testing.T) {
 	var buf strings.Builder
-	err := pson.Marshal(&buf, map[string]any{
-		"test": pson.AsyncFunc(func() (any, error) {
+	err := pson.Marshal(t.Context(), &buf, map[string]any{
+		"test": pson.AsyncFunc(func(ctx context.Context) (any, error) {
 			return map[string]any{
-				"recursive": pson.AsyncFunc(func() (any, error) {
+				"recursive": pson.AsyncFunc(func(ctx context.Context) (any, error) {
 					return 3, nil
 				}),
 			}, nil
