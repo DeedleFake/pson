@@ -1,0 +1,98 @@
+const psonRE = /^\$pson:[0-9]+$/;
+
+export async function parsePSON(reader) {
+	return await new Promise(async (resolve, reject) => {
+		const decoder = new TextDecoder();
+		let accumulator = '';
+
+		const completers = new Map();
+		while (true) {
+			const { value, done } = await reader.read();
+			if (done && accumulator === '') {
+				return;
+			}
+
+			accumulator += decoder.decode(value);
+			const jsonEnd = findJsonEnd(accumulator);
+			if (jsonEnd < 0) {
+				continue;
+			}
+
+			const jsonStr = accumulator.slice(0, jsonEnd);
+			const obj = swapPromises(JSON.parse(jsonStr), completers);
+			resolve(obj);
+			complete(obj, completers);
+			accumulator = accumulator.slice(jsonEnd);
+		}
+	})
+}
+
+function findJsonEnd(str) {
+	let i = 0;
+	while (i < str.length && /\s/.test(str[i])) i++;
+	if (i < str.length && str[i] === '{') {
+		let counter = 1;
+		i++;
+		let inString = false;
+		let escape = false;
+		while (i < str.length && counter > 0) {
+			const char = str[i];
+			if (!inString) {
+				if (char === '{') counter++;
+				else if (char === '}') counter--;
+				else if (char === '"') inString = true;
+			} else {
+				if (escape) escape = false;
+				else if (char === '\\') escape = true;
+				else if (char === '"') inString = false;
+			}
+			i++;
+		}
+		if (counter === 0) return i;
+	}
+	return -1;
+}
+
+function swapPromises(value, completers) {
+	switch (typeof (value)) {
+		case 'string':
+			if (value.match(psonRE)) {
+				const c = new Completer();
+				completers.set(value, c);
+				return c.promise;
+			}
+			return value;
+
+		case 'object':
+			if (value == null) {
+				return value;
+			}
+			return Object.fromEntries(Object.entries(value)
+				.map(([name, value]) => [name, swapPromises(value, completers)]));
+
+		default:
+			return value;
+	}
+}
+
+function complete(obj, completers) {
+	if (typeof (obj) !== 'object' || obj == null) {
+		return;
+	}
+
+	Object.entries(obj)
+		.filter(([name, _value]) => name.match(psonRE))
+		.forEach(([name, value]) => {
+			completers.get(name).resolve(value);
+		});
+}
+
+
+class Completer {
+	constructor() {
+		this.promise = new Promise((resolve, reject) => {
+			this.resolve = resolve
+			this.reject = reject
+		})
+	}
+}
