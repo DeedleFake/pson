@@ -13,7 +13,7 @@ export async function parsePSON(reader) {
 			}
 
 			accumulator += decoder.decode(value);
-			const jsonEnd = findJsonEnd(accumulator);
+			const jsonEnd = accumulator.indexOf('\n')
 			if (jsonEnd < 0) {
 				continue;
 			}
@@ -22,35 +22,9 @@ export async function parsePSON(reader) {
 			const obj = swapPromises(JSON.parse(jsonStr), completers);
 			resolve(obj);
 			complete(obj, completers);
-			accumulator = accumulator.slice(jsonEnd);
+			accumulator = accumulator.slice(jsonEnd + 1);
 		}
 	})
-}
-
-function findJsonEnd(str) {
-	let i = 0;
-	while (i < str.length && /\s/.test(str[i])) i++;
-	if (i < str.length && str[i] === '{') {
-		let counter = 1;
-		i++;
-		let inString = false;
-		let escape = false;
-		while (i < str.length && counter > 0) {
-			const char = str[i];
-			if (!inString) {
-				if (char === '{') counter++;
-				else if (char === '}') counter--;
-				else if (char === '"') inString = true;
-			} else {
-				if (escape) escape = false;
-				else if (char === '\\') escape = true;
-				else if (char === '"') inString = false;
-			}
-			i++;
-		}
-		if (counter === 0) return i;
-	}
-	return -1;
 }
 
 function swapPromises(value, completers) {
