@@ -6,23 +6,25 @@ export async function parsePSON(reader) {
 		let accumulator = '';
 
 		const completers = new Map();
-		while (true) {
+		for (; ;) {
 			const { value, done } = await reader.read();
 			if (done && accumulator === '') {
 				return;
 			}
 
 			accumulator += decoder.decode(value);
-			const jsonEnd = accumulator.indexOf('\n')
-			if (jsonEnd < 0) {
-				continue;
-			}
+			for (; ;) {
+				const jsonEnd = accumulator.indexOf('\n')
+				if (jsonEnd < 0) {
+					break;
+				}
 
-			const jsonStr = accumulator.slice(0, jsonEnd);
-			const obj = swapPromises(JSON.parse(jsonStr), completers);
-			resolve(obj);
-			complete(obj, completers);
-			accumulator = accumulator.slice(jsonEnd + 1);
+				const jsonStr = accumulator.slice(0, jsonEnd);
+				const obj = swapPromises(JSON.parse(jsonStr), completers);
+				resolve(obj);
+				complete(obj, completers);
+				accumulator = accumulator.slice(jsonEnd + 1);
+			}
 		}
 	})
 }
