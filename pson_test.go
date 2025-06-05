@@ -21,5 +21,5 @@ func TestMarshal(t *testing.T) {
 		}),
 	})
 	require.Nil(t, err)
-	t.Log(buf.String())
+	require.Equal(t, `{"test":"$pson:1"}{"$pson:1":{"recursive":"$pson:2"}}{"$pson:2":3}`, buf.String())
 }
