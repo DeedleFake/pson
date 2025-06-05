@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -32,13 +33,18 @@ type result struct {
 // return a value containing more AsyncFunc values which will in turn
 // all be called in a similar way.
 //
+// Every marshal, first for in and then for the results of the various
+// AsyncFunc calls, will be written to out as a separate chunk. These
+// will be obtained, written to, and then immediately closed. These
+// calls do not happen concurrently with other chunks being written.
+//
 // Every call to an AsyncFunc is passed a context dervived from the
 // provided ctx but that is canceled when Marshal returns.
 //
 // Marshal does not return until all AsyncFunc calls have fully exited
 // or until one of them returns an error or an error is encountered
 // during the encoding process.
-func Marshal(ctx context.Context, out io.Writer, in any, opts ...json.Options) error {
+func Marshal(ctx context.Context, out ChunkWriter, in any, opts ...json.Options) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -65,8 +71,15 @@ func Marshal(ctx context.Context, out io.Writer, in any, opts ...json.Options) e
 		return e.WriteToken(jsontext.String(id))
 	}))
 
+	chunk, err := out.Chunk()
+	if err != nil {
+		return err
+	}
 	opt = json.JoinOptions(opt, json.WithMarshalers(m))
-	err := json.MarshalWrite(out, in, opt)
+
+	merr := json.MarshalWrite(chunk, in, opt)
+	cerr := chunk.Close()
+	err = errors.Join(merr, cerr)
 	if err != nil {
 		return err
 	}
@@ -81,12 +94,45 @@ func Marshal(ctx context.Context, out io.Writer, in any, opts ...json.Options) e
 			close(r.Done)
 			return r.Err
 		}
-		err := json.MarshalWrite(out, map[string]any{r.ID: r.Val}, opt)
+
+		chunk, err := out.Chunk()
+		if err != nil {
+			return err
+		}
+
+		merr := json.MarshalWrite(chunk, map[string]any{r.ID: r.Val}, opt)
+		cerr := chunk.Close()
 		close(r.Done)
+		err = errors.Join(merr, cerr)
 		if err != nil {
 			return err
 		}
 	}
 
+	return nil
+}
+
+// ChunkWriter is something that can be written to in pieces. This is
+// a way for Marshal to make sure that data is sent after each piece
+// of JSON is ready. For simple use-cases, see [Chunk].
+type ChunkWriter interface {
+	Chunk() (io.WriteCloser, error)
+}
+
+type chunkWriter struct {
+	io.Writer
+}
+
+// Chunk returns a ChunkWriter that returns chunks that write directly
+// to w and have no-op Close methods.
+func Chunk(w io.Writer) ChunkWriter {
+	return &chunkWriter{Writer: w}
+}
+
+func (w *chunkWriter) Chunk() (io.WriteCloser, error) {
+	return w, nil
+}
+
+func (w *chunkWriter) Close() error {
 	return nil
 }

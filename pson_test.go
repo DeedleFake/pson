@@ -11,7 +11,7 @@ import (
 
 func TestMarshal(t *testing.T) {
 	var buf strings.Builder
-	err := pson.Marshal(t.Context(), &buf, map[string]any{
+	err := pson.Marshal(t.Context(), pson.Chunk(&buf), map[string]any{
 		"test": pson.AsyncFunc(func(ctx context.Context) (any, error) {
 			return map[string]any{
 				"recursive": pson.AsyncFunc(func(ctx context.Context) (any, error) {
