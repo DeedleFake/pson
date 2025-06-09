@@ -63,6 +63,12 @@ func marshalChunk(out ChunkWriter, v any, opts ...json.Options) error {
 	return errors.Join(merr, cerr)
 }
 
+func joinMarshalersOptions(opts json.Options, marshalers ...*json.Marshalers) json.Options {
+	m, _ := json.GetOption(opts, json.WithMarshalers)
+	m = json.JoinMarshalers(m, json.JoinMarshalers(marshalers...))
+	return json.JoinOptions(opts, json.WithMarshalers(m))
+}
+
 // Marshal encodes a piece of data as JSON and writes it to out. This
 // works almost exactly like [json.Marshal] except that it adds
 // specialized support for [AsyncFunc] values. When one is encountered
@@ -92,11 +98,7 @@ func Marshal(ctx context.Context, out ChunkWriter, in any, opts ...json.Options)
 		ctx: ctx,
 		c:   make(chan result),
 	}
-
-	opt := json.JoinOptions(opts...)
-	m, _ := json.GetOption(opt, json.WithMarshalers)
-	m = json.JoinMarshalers(m, json.MarshalToFunc(state.Marshal))
-	opt = json.JoinOptions(opt, json.WithMarshalers(m))
+	opt := joinMarshalersOptions(json.JoinOptions(opts...), json.MarshalToFunc(state.Marshal))
 
 	err := marshalChunk(out, in, opt)
 	if err != nil {
